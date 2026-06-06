@@ -11,13 +11,11 @@ export VK_ICD_FILENAMES=/data/data/com.termux/files/usr/share/vulkan/icd.d/freed
 # Wait for system to settle after boot
 sleep 10
 
-# Auto-select best available model
-if [ -f "/path/to/qwen3-4b-q4_k_m.gguf" ]; then
-  MODEL="/path/to/qwen3-4b-q4_k_m.gguf"
-elif [ -f "/path/to/nemotron-4b-q4_k_m.gguf" ]; then
-  MODEL="/path/to/nemotron-4b-q4_k_m.gguf"
-else
-  echo "No model found!" > /sdcard/llama_error.log
+# Auto-select model
+MODEL="/path/to/qwen3-4b-q4_k_m.gguf"
+
+if [ ! -f "$MODEL" ]; then
+  echo "Model not found: $MODEL" > /sdcard/llama_error.log
   exit 1
 fi
 

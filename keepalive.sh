@@ -10,6 +10,11 @@ export VK_ICD_FILENAMES=/data/data/com.termux/files/usr/share/vulkan/icd.d/freed
 
 LLAMA_SERVER="/data/data/com.termux/files/home/llama.cpp/build_vk/bin/llama-server"
 MODEL="/path/to/your/model.gguf"
+
+if [ ! -f "$MODEL" ]; then
+  echo "$(date): Model not found: $MODEL" >> /sdcard/keepalive.log
+  exit 1
+fi
 LOG="/sdcard/llama.log"
 
 while true; do

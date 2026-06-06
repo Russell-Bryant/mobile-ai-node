@@ -24,7 +24,18 @@ Setup documentation for running llama.cpp with GPU acceleration on Android (Term
 - **Termux** (Android terminal emulator)
 - **llama.cpp** — commit `c20c44514` (stable for Android Vulkan)
 - **Vulkan** via Mesa Freedreno ICD
-- **Model**: Qwen3-4B-Q4_K_M (recommended) or Nemotron 4B
+- **Model**: Qwen3-4B-Q4_K_M (recommended)
+
+## ⚠️ Thinking/Reasoning Models — Not Advised
+
+Thinking models (e.g. Nemotron, DeepSeek-R1, QwQ) generate internal reasoning tokens before producing a final response. On mobile GPU inference this causes:
+
+- **2-5x slower generation** — thinking tokens consume context and GPU cycles
+- **Context window exhaustion** — reasoning chains eat into limited mobile context
+- **Unpredictable latency** — thinking depth varies per query, making response times inconsistent
+- **Higher crash risk** — longer GPU workloads increase chance of SSH/sshd failure
+
+**Use non-reasoning models only.** Qwen3-4B is the recommended choice — fast, capable, and designed for direct response generation.
 
 ## Why This Commit
 
@@ -177,9 +188,11 @@ providers:
     context_length: 65536
 ```
 
-Model options per use case:
+Model options:
 - **Qwen3-4B-Q4_K_M**: Fast, non-reasoning, best for agent tasks
-- **Nemotron-4B-Q4_K_M**: Reasoning/thinking capabilities, slower
+- Other non-reasoning models in the 4B-8B range work well too
+
+**Avoid thinking/reasoning models** — see warning above. They are 2-5x slower and unstable on mobile GPU.
 
 ## Troubleshooting
 
@@ -195,8 +208,6 @@ Model options per use case:
 
 | Model | Backend | Prompt (t/s) | Generation (t/s) |
 |-------|---------|-------------|-----------------|
-| Nemotron-4B | Vulkan GPU | 7.4 | 10.2 |
-| Nemotron-4B | CPU (8 thr) | — | 1.9 |
 | Qwen3-4B | CPU (8 thr) | — | 6.6–6.9 |
 
 Qwen3-4B GPU benchmarks pending (non-reasoning model should be significantly faster).
@@ -208,7 +219,7 @@ When using the phone as a Hermes inference backend for cron jobs:
 ```yaml
 # Cron jobs targeting the phone should use:
 provider: phone
-model: nvidia/NVIDIA-Nemotron3-Nano-4B-Q4_K_M  # or qwen3-4b when available
+model: qwen3-4b-q4_k_m
 
 # Keep prompts tight and set word limits to avoid timeouts.
 # The phone model is a fallback — primary inference should use local PC.
