@@ -1,0 +1,7 @@
+# mobile-ai-node
+.llama-server logs, models, and local config are NOT tracked.
+This repo contains only documentation and helper scripts.
+
+*.gguf
+*.log
+.env
