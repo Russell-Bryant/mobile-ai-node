@@ -1,16 +1,64 @@
 # Mobile AI Inference Node
 
-Setup documentation for running llama.cpp on Android (Termux) as a Hermes agent inference backend.
+Setup documentation for running llama.cpp on Android (Termux) as an AI inference backend for agent harnesses.
+
+## What This Project Does
+
+This repo turns an Android phone into a **local LLM inference node** — a failover AI backend that runs entirely on-device, no cloud required. It exposes an OpenAI-compatible API via `llama-server` that any agent harness can connect to.
+
+**This is the inference layer.** By itself, the phone just serves completions. To make it useful you need two more pieces:
+
+| Layer | What it does | Examples |
+|-------|-------------|----------|
+| **UI / Messaging** | Where you talk to the agent | Telegram, Discord, WhatsApp, Signal, Slack |
+| **Agent Harness** | Orchestrates tools, memory, scheduling, multi-step reasoning | Hermes Agent, OpenClaw |
+| **Inference** *(this repo)* | Runs the LLM, generates responses | llama.cpp on phone |
+
+### UI / Messaging Platform
+
+You need a messaging platform as the **entry point** for conversations. The harness connects to it as a bot:
+
+- **Telegram** — Bot API via `python-telegram-bot` or grammY. Most popular for personal AI agents. Supports inline buttons, topics, groups.
+- **Discord** — Bot API via `discord.py`. Good for multi-user servers, thread-based conversations.
+- **WhatsApp** — Business API or Baileys-based bridges. Higher friction to set up but reaches the most users.
+- **Signal** — `signal-cli` bridge. Best privacy, smallest ecosystem.
+- **Slack** — Bot tokens + Socket Mode. Team-oriented.
+
+The phone node doesn't connect to any of these directly — the **harness** does. The phone just serves completions over HTTP.
+
+### Agent Harness
+
+The harness is the **brain** that sits between the UI and the inference backend:
+
+- **Hermes Agent** (this setup) — Open-source, self-hosted, tool-calling, cron jobs, session memory, multi-provider fallback. Connects to Telegram, Discord, WhatsApp, Signal, Slack, Matrix, and more. Config-driven via `~/.hermes/config.yaml`.
+- **OpenClaw** — Another open-source agent framework with similar goals. Also supports multiple messaging backends and local inference.
+
+Both expect an OpenAI-compatible `/v1/chat/completions` endpoint. That's what `llama-server` provides.
 
 ## Architecture
 
 ```
-┌─────────────┐     SSH tunnel      ┌─────────────────┐
-│   VPS        │ ──────────────────► │  Phone (Termux)  │
-│  Hermes      │  port 18081 → 8081 │  llama-server    │
-│  agent       │                     │  CPU (8 threads) │
-└─────────────┘                      └─────────────────┘
+┌──────────────┐
+│  Telegram /   │  ← You talk here
+│  Discord /    │
+│  WhatsApp     │
+└──────┬───────┘
+       │
+┌──────▼───────┐
+│  Agent        │  ← Hermes / OpenClaw
+│  Harness      │     (VPS, tools, memory, scheduling)
+└──────┬───────┘
+       │  SSH tunnel (port 18081 → 8081)
+┌──────▼───────┐
+│  Phone        │  ← This repo
+│  llama-server │     (Termux, CPU inference)
+│  Qwen3-4B     │
+└──────────────┘
 ```
+
+**Data flow:** You send a message on Telegram → harness receives it → harness builds a prompt with tools/memory → sends to phone via SSH tunnel → llama.cpp generates a response → harness delivers it back to Telegram.
+
+The phone is a **failover tier** — when your primary GPU workstation is offline, the harness routes inference to the phone automatically.
 
 ## Hardware Requirements
 
@@ -174,6 +222,10 @@ Model options:
 - Other non-reasoning models in the 4B-8B range work well too
 
 **Avoid thinking/reasoning models** — see warning above. They are 2-5x slower and unstable on mobile.
+
+### Other Harnesses
+
+The phone's `llama-server` exposes a standard OpenAI-compatible API. Any harness that supports custom OpenAI endpoints can use it — just point `base_url` at the SSH tunnel (e.g., `http://127.0.0.1:18081/v1`). The 64K context override described below is Hermes-specific; other harnesses may have different minimums or none at all.
 
 ### ⚠️ Hermes 64K Context Minimum (Required)
 
