@@ -1,36 +1,16 @@
-#!/data/data/com.termux/files/usr/bin/bash
-# start-llama.sh — Boot auto-start for llama-server
-# Place at ~/.termux/boot/start-llama.sh on the phone
-#
-# Requires: Termux:Boot app installed and run at least once
-# Requires: termux-wake-lock (run manually once)
+#!/bin/bash
+# ~/.termux/boot/start-llama.sh
+# Auto-starts llama-server on phone boot via Termux:Boot
 
-export LD_LIBRARY_PATH=/data/data/com.termux/files/usr/lib
-export VK_ICD_FILENAMES=/data/data/com.termux/files/usr/share/vulkan/icd.d/freedreno_icd.aarch64.json
+sleep 10  # Wait for system
 
-# Wait for system to settle after boot
-sleep 10
+MODEL=/data/data/com.termux/files/home/storage/shared/AI_Models/Qwen3-4B-Q4_K_M.gguf
+BINARY=/data/data/com.termux/files/home/llama.cpp/build_cpu/bin/llama-server
+LOG=/data/data/com.termux/files/home/llama.log
 
-# Auto-select model
-MODEL="/path/to/qwen3-4b-q4_k_m.gguf"
+$BINARY -m $MODEL -ngl 0 -t 8 -c 40960 \
+  --host 0.0.0.0 --port 8081 > $LOG 2>&1 &
 
-if [ ! -f "$MODEL" ]; then
-  echo "Model not found: $MODEL" > /sdcard/llama_error.log
-  exit 1
-fi
-
-LLAMA_SERVER="/data/data/com.termux/files/home/llama.cpp/build_vk/bin/llama-server"
-
-# Start llama-server
-cd /data/data/com.termux/files/home
-nohup $LLAMA_SERVER \
-  -m "$MODEL" \
-  -ngl 99 \
-  -t 8 \
-  -c 8192 \
-  --host 127.0.0.1 \
-  --port 8081 > /sdcard/llama.log 2>&1 &
-
-# Start watchdog
 sleep 5
-nohup /data/data/com.termux/files/usr/bin/bash /sdcard/keepalive.sh > /dev/null 2>&1 &
+# Start watchdog
+bash /sdcard/keepalive.sh &

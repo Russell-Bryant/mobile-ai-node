@@ -1,33 +1,17 @@
 #!/bin/bash
-# keepalive.sh — Watchdog for llama-server on Android Termux
-# Place at /sdcard/keepalive.sh on the phone
-#
-# Checks every 60 seconds if llama-server is running.
-# Restarts it if dead. Logs to /sdcard/keepalive.log.
+# keepalive.sh — place on phone at /sdcard/keepalive.sh
+# Watches llama-server and restarts if it dies
 
-export LD_LIBRARY_PATH=/data/data/com.termux/files/usr/lib
-export VK_ICD_FILENAMES=/data/data/com.termux/files/usr/share/vulkan/icd.d/freedreno_icd.aarch64.json
-
-LLAMA_SERVER="/data/data/com.termux/files/home/llama.cpp/build_vk/bin/llama-server"
-MODEL="/path/to/your/model.gguf"
-
-if [ ! -f "$MODEL" ]; then
-  echo "$(date): Model not found: $MODEL" >> /sdcard/keepalive.log
-  exit 1
-fi
-LOG="/sdcard/llama.log"
+MODEL=/data/data/com.termux/files/home/storage/shared/AI_Models/Qwen3-4B-Q4_K_M.gguf
+BINARY=/data/data/com.termux/files/home/llama.cpp/build_cpu/bin/llama-server
+LOG=/data/data/com.termux/files/home/llama.log
 
 while true; do
   if ! pgrep -f llama-server > /dev/null 2>&1; then
-    echo "$(date): Server dead, restarting..." >> /sdcard/keepalive.log
+    echo "$(date): Server dead, restarting..." >> /data/data/com.termux/files/home/keepalive.log
     cd /data/data/com.termux/files/home
-    $LLAMA_SERVER \
-      -m "$MODEL" \
-      -ngl 99 \
-      -t 8 \
-      -c 8192 \
-      --host 127.0.0.1 \
-      --port 8081 > "$LOG" 2>&1 &
+    $BINARY -m $MODEL -ngl 0 -t 8 -c 40960 \
+      --host 0.0.0.0 --port 8081 > $LOG 2>&1 &
     sleep 5
   fi
   sleep 60

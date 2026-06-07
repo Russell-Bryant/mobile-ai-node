@@ -1,6 +1,6 @@
 # Mobile AI Inference Node
 
-Setup documentation for running llama.cpp with GPU acceleration on Android (Termux) as a Hermes agent inference backend.
+Setup documentation for running llama.cpp on Android (Termux) as a Hermes agent inference backend.
 
 ## Architecture
 
@@ -8,13 +8,13 @@ Setup documentation for running llama.cpp with GPU acceleration on Android (Term
 ┌─────────────┐     SSH tunnel      ┌─────────────────┐
 │   VPS        │ ──────────────────► │  Phone (Termux)  │
 │  Hermes      │  port 18081 → 8081 │  llama-server    │
-│  agent       │                     │  Vulkan + Adreno │
+│  agent       │                     │  CPU (8 threads) │
 └─────────────┘                      └─────────────────┘
 ```
 
 ## Hardware Requirements
 
-- Snapdragon 8 Elite (or similar with Adreno GPU)
+- Snapdragon 8 Elite (or similar)
 - 12GB+ RAM
 - Termux installed
 - Tailscale or direct SSH access
@@ -22,8 +22,8 @@ Setup documentation for running llama.cpp with GPU acceleration on Android (Term
 ## Software Stack
 
 - **Termux** (Android terminal emulator)
-- **llama.cpp** — commit `c20c44514` (stable for Android Vulkan)
-- **Vulkan** via Mesa Freedreno ICD
+- **llama.cpp** — commit `c20c44514` (stable for Android)
+- **CPU-only inference** — GPU (Vulkan) is slower for small models (see benchmarks)
 - **Model**: Qwen3-4B-Q4_K_M (recommended)
 
 ## ⚠️ Thinking/Reasoning Models — Not Advised
@@ -52,45 +52,30 @@ pkg install screen curl python
 termux-wake-lock
 ```
 
-### 2. Build llama.cpp (Vulkan)
+### 2. Build llama.cpp (CPU)
 
 ```bash
 git clone https://github.com/ggerganov/llama.cpp.git
 cd llama.cpp
 git checkout c20c44514
-mkdir build_vk && cd build_vk
-cmake -DBUILD_SHARED_LIBS=OFF -DGGML_VULKAN=ON -DGGML_CPU=ON ..
+mkdir build_cpu && cd build_cpu
+cmake -DBUILD_SHARED_LIBS=OFF ..
 cmake --build . --target llama-server -j$(nproc)
 ```
 
-> **Important**: The build takes 20-30 minutes. SSH may crash during GPU shader compilation. Use `(build_script &)` pattern to survive disconnects.
-
-### 3. Vulkan Driver Setup
-
-The open-source Mesa Freedreno driver works out of the box on Termux:
-
-```bash
-# Verify Vulkan is working
-pkg install mesa-vulkan-icd-freedreno
-# Should provide: /data/data/com.termux/files/usr/share/vulkan/icd.d/freedreno_icd.aarch64.json
-```
-
-For proprietary Adreno performance, the Vulkan loader will auto-select the best available driver.
+Build takes 10-15 minutes. The CPU build is simpler and faster than GPU.
 
 ## Running the Server
 
 ### Start Command
 
 ```bash
-export LD_LIBRARY_PATH=/data/data/com.termux/files/usr/lib
-export VK_ICD_FILENAMES=/data/data/com.termux/files/usr/share/vulkan/icd.d/freedreno_icd.aarch64.json
-
 llama-server \
   -m /path/to/model.gguf \
-  -ngl 99 \
+  -ngl 0 \
   -t 8 \
-  -c 8192 \
-  --host 127.0.0.1 \
+  -c 40960 \
+  --host 0.0.0.0 \
   --port 8081
 ```
 
@@ -98,10 +83,10 @@ llama-server \
 
 | Flag | Value | Purpose |
 |------|-------|---------|
-| `-ngl` | 99 | Offload all layers to GPU |
-| `-t` | 8 | CPU threads for prompt processing |
-| `-c` | 8192 | Context window size |
-| `--host` | 127.0.0.1 | Local only (SSH tunnel) |
+| `-ngl` | 0 | CPU-only (GPU is slower for small models) |
+| `-t` | 8 | CPU threads |
+| `-c` | 40960 | Context window (capped by model training context) |
+| `--host` | 0.0.0.0 | Allow SSH tunnel connections |
 | `--port` | 8081 | Server port |
 
 ### SSH Tunnel (VPS side)
@@ -112,20 +97,17 @@ ssh -L 18081:127.0.0.1:8081 user@phone-ip -p 8022 -N -f
 
 ## Resilience: Keepalive Watchdog
 
-SSH crashes when the GPU is under load. A watchdog handles auto-restart:
-
 ```bash
 #!/bin/bash
-# keepalive.sh — place on phone at /sdcard/keepalive.sh
+# keepalive.sh — place on phone
 
-export LD_LIBRARY_PATH=/data/data/com.termux/files/usr/lib
-export VK_ICD_FILENAMES=/data/data/com.termux/files/usr/share/vulkan/icd.d/freedreno_icd.aarch64.json
+MODEL=/path/to/model.gguf
+BINARY=llama.cpp/build_cpu/bin/llama-server
 
 while true; do
   if ! pgrep -f llama-server > /dev/null; then
-    # Restart server (adjust model path)
-    llama-server -m /path/to/model.gguf -ngl 99 -t 8 -c 8192 \
-      --host 127.0.0.1 --port 8081 > /sdcard/llama.log 2>&1 &
+    $BINARY -m $MODEL -ngl 0 -t 8 -c 40960 \
+      --host 0.0.0.0 --port 8081 > llama.log 2>&1 &
     sleep 5
   fi
   sleep 60
@@ -140,13 +122,10 @@ Check every 60 seconds. If server is dead, restart it.
 #!/data/data/com.termux/files/usr/bin/bash
 # ~/.termux/boot/start-llama.sh
 
-export LD_LIBRARY_PATH=/data/data/com.termux/files/usr/lib
-export VK_ICD_FILENAMES=/data/data/com.termux/files/usr/share/vulkan/icd.d/freedreno_icd.aarch64.json
-
 sleep 10  # Wait for system
 
-llama-server -m /path/to/model.gguf -ngl 99 -t 8 -c 8192 \
-  --host 127.0.0.1 --port 8081 > /sdcard/llama.log 2>&1 &
+llama-server -m /path/to/model.gguf -ngl 0 -t 8 -c 40960 \
+  --host 0.0.0.0 --port 8081 > llama.log 2>&1 &
 
 sleep 5
 # Start watchdog
@@ -184,33 +163,36 @@ The subshell pattern survives SSH disconnects because the parent exits immediate
 providers:
   phone:
     base_url: http://127.0.0.1:18081/v1
-    model: qwen3-4b-q4_k_m
-    context_length: 65536
+    model: Qwen3-4B-Q4_K_M.gguf
+    context_length: 40960
 ```
 
 Model options:
 - **Qwen3-4B-Q4_K_M**: Fast, non-reasoning, best for agent tasks
 - Other non-reasoning models in the 4B-8B range work well too
 
-**Avoid thinking/reasoning models** — see warning above. They are 2-5x slower and unstable on mobile GPU.
+**Avoid thinking/reasoning models** — see warning above. They are 2-5x slower and unstable on mobile.
 
 ## Troubleshooting
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| SSH dies during GPU operations | Android sshd crashes under GPU load | Use keepalive watchdog, access via screen if needed |
-| Vulkan segfault on start | Wrong llama.cpp commit | Checkout `c20c44514` and rebuild |
+| SSH dies during heavy operations | Android sshd crashes under sustained load | Use keepalive watchdog, access via screen if needed |
 | Model fails to load | Wrong path or corrupted file | Verify `.gguf` file integrity |
 | Server not responding | Phone sleeping | `termux-wake-lock` + keepalive |
-| Slow generation | CPU-only fallback | Check GPU layers with `-ngl 99`, verify Vulkan ICD |
+| Slow generation | Too few CPU threads | Use `-t 8` for 8-core phones |
+| Context errors | Context exceeds model training limit | Cap at model's training context (40960 for Qwen3-4B) |
 
-## Benchmarks (Snapdragon 8 Elite, Adreno 830)
+## Benchmarks (Snapdragon 8 Elite, 22GB RAM)
 
-| Model | Backend | Prompt (t/s) | Generation (t/s) |
-|-------|---------|-------------|-----------------|
-| Qwen3-4B | CPU (8 thr) | — | 6.6–6.9 |
+| Model | Backend | Avg Generation (t/s) | Notes |
+|-------|---------|---------------------|-------|
+| Qwen3-4B-Q4_K_M | CPU (8 threads) | **15.4** | Fastest config for this model |
+| Qwen3-4B-Q4_K_M | GPU (Vulkan, ngl=99) | **8.7** | 77% slower than CPU |
 
-Qwen3-4B GPU benchmarks pending (non-reasoning model should be significantly faster).
+**Why CPU is faster for Qwen3-4B:** The model is small enough (4B params, 2.5GB) that the CPU handles it efficiently. GPU overhead (Vulkan driver, memory transfers) actually slows things down. GPU only wins on larger models (13B+) where parallelization outweighs overhead.
+
+**Recommendation:** Use CPU-only (`-ngl 0 -t 8`) for Qwen3-4B and similar small models.
 
 ## Cron Job Configuration
 
