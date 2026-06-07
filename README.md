@@ -1,64 +1,27 @@
 # Mobile AI Inference Node
 
-Setup documentation for running llama.cpp on Android (Termux) as an AI inference backend for agent harnesses.
-
-## What This Project Does
-
-This repo turns an Android phone into a **local LLM inference node** — a failover AI backend that runs entirely on-device, no cloud required. It exposes an OpenAI-compatible API via `llama-server` that any agent harness can connect to.
-
-**This is the inference layer.** By itself, the phone just serves completions. To make it useful you need two more pieces:
-
-| Layer | What it does | Examples |
-|-------|-------------|----------|
-| **UI / Messaging** | Where you talk to the agent | Telegram, Discord, WhatsApp, Signal, Slack |
-| **Agent Harness** | Orchestrates tools, memory, scheduling, multi-step reasoning | Hermes Agent, OpenClaw |
-| **Inference** *(this repo)* | Runs the LLM, generates responses | llama.cpp on phone |
-
-### UI / Messaging Platform
-
-You need a messaging platform as the **entry point** for conversations. The harness connects to it as a bot:
-
-- **Telegram** — Bot API via `python-telegram-bot` or grammY. Most popular for personal AI agents. Supports inline buttons, topics, groups.
-- **Discord** — Bot API via `discord.py`. Good for multi-user servers, thread-based conversations.
-- **WhatsApp** — Business API or Baileys-based bridges. Higher friction to set up but reaches the most users.
-- **Signal** — `signal-cli` bridge. Best privacy, smallest ecosystem.
-- **Slack** — Bot tokens + Socket Mode. Team-oriented.
-
-The phone node doesn't connect to any of these directly — the **harness** does. The phone just serves completions over HTTP.
-
-### Agent Harness
-
-The harness is the **brain** that sits between the UI and the inference backend:
-
-- **Hermes Agent** (this setup) — Open-source, self-hosted, tool-calling, cron jobs, session memory, multi-provider fallback. Connects to Telegram, Discord, WhatsApp, Signal, Slack, Matrix, and more. Config-driven via `~/.hermes/config.yaml`.
-- **OpenClaw** — Another open-source agent framework with similar goals. Also supports multiple messaging backends and local inference.
-
-Both expect an OpenAI-compatible `/v1/chat/completions` endpoint. That's what `llama-server` provides.
+Setup documentation for running llama.cpp on Android (Termux) as a Hermes agent inference backend.
 
 ## Architecture
 
 ```
-┌──────────────┐
-│  Telegram /   │  ← You talk here
-│  Discord /    │
-│  WhatsApp     │
-└──────┬───────┘
-       │
-┌──────▼───────┐
-│  Agent        │  ← Hermes / OpenClaw
-│  Harness      │     (VPS, tools, memory, scheduling)
-└──────┬───────┘
-       │  SSH tunnel (port 18081 → 8081)
-┌──────▼───────┐
-│  Phone        │  ← This repo
-│  llama-server │     (Termux, CPU inference)
-│  Qwen3-4B     │
-└──────────────┘
+┌─────────────┐     SSH tunnel      ┌─────────────────────────────┐
+│   VPS        │ ──────────────────► │  Phone (Termux)              │
+│  Hermes      │  port 18081 → 8081 │  ┌─────────────────────────┐ │
+│  agent       │                     │  │ screen: llama           │ │
+│              │                     │  │  └─ llama-server :8081  │ │
+│              │                     │  │ keepalive.sh (60s loop) │ │
+│              │                     │  │ watchdog.sh (restart)   │ │
+│              │                     │  └─────────────────────────┘ │
+│              │                     │  termux-wake-lock active     │
+│              │                     │  Termux:Boot registered      │
+└─────────────┘                      └─────────────────────────────┘
+
+Resilience layers:
+  Phone boot ──► Termux:Boot ──► start-llama.sh ──► screen + keepalive
+  llama dies  ──► keepalive (60s) ──► watchdog.sh ──► restart in screen
+  tunnel drops ──► VPS cron (5min) ──► phone-tunnel-keepalive.sh ──► reconnect
 ```
-
-**Data flow:** You send a message on Telegram → harness receives it → harness builds a prompt with tools/memory → sends to phone via SSH tunnel → llama.cpp generates a response → harness delivers it back to Telegram.
-
-The phone is a **failover tier** — when your primary GPU workstation is offline, the harness routes inference to the phone automatically.
 
 ## Hardware Requirements
 
@@ -73,6 +36,55 @@ The phone is a **failover tier** — when your primary GPU workstation is offlin
 - **llama.cpp** — commit `c20c44514` (stable for Android)
 - **CPU-only inference** — GPU (Vulkan) is slower for small models (see benchmarks)
 - **Model**: Qwen3-4B-Q4_K_M (recommended)
+
+## Resilience: Three-Layer Watchdog
+
+### Layer 1: Boot Auto-Start (`start-llama.sh`)
+
+Runs via Termux:Boot on phone startup. Acquires wake lock, kills stale instances, starts llama-server in a `screen` session, and launches the keepalive loop.
+
+```bash
+# ~/.termux/boot/start-llama.sh
+termux-wake-lock
+screen -dmS llama bash -c "llama-server --model ... --port 8081 ..."
+nohup bash ~/keepalive.sh &
+```
+
+### Layer 2: Keepalive Loop (`keepalive.sh`)
+
+Runs continuously on the phone. Every 60 seconds, checks if llama-server is alive and responding. Triggers the watchdog if not.
+
+```bash
+# ~/keepalive.sh — runs in background
+while true; do
+    if ! pgrep -f "llama-server" || ! curl -s http://127.0.0.1:8081/health; then
+        bash ~/watchdog.sh
+    fi
+    sleep 60
+done
+```
+
+### Layer 3: Watchdog (`watchdog.sh`)
+
+Kills unresponsive llama-server processes and restarts in screen. Verifies the restart succeeded.
+
+```bash
+# ~/watchdog.sh — called by keepalive
+pkill -9 -f llama-server
+screen -dmS llama bash -c "llama-server ..."
+# verify after 8s
+```
+
+### Layer 4: VPS Tunnel Keepalive (`vps-tunnel-keepalive.sh`)
+
+Runs on the VPS via cron every 5 minutes. Checks if the SSH tunnel to the phone is healthy. Reconnects if down.
+
+```bash
+# Crontab (VPS):
+*/5 * * * * /home/russell/scripts/phone-tunnel-keepalive.sh >/dev/null 2>&1
+```
+
+SSH options used: `ServerAliveInterval=20`, `ServerAliveCountMax=3`, `TCPKeepAlive=yes`, `ExitOnForwardFailure=yes`.
 
 ## ⚠️ Thinking/Reasoning Models — Not Advised
 
@@ -113,6 +125,24 @@ cmake --build . --target llama-server -j$(nproc)
 
 Build takes 10-15 minutes. The CPU build is simpler and faster than GPU.
 
+### 3. Install Scripts
+
+Copy the three resilience scripts to the phone:
+
+```bash
+# On phone:
+cp start-llama.sh ~/.termux/boot/start-llama.sh
+cp keepalive.sh ~/keepalive.sh
+cp watchdog.sh ~/watchdog.sh
+chmod +x ~/.termux/boot/start-llama.sh ~/keepalive.sh ~/watchdog.sh
+```
+
+### 4. Android Settings (Required)
+
+- **Disable battery optimization** for Termux (Android Settings → Apps → Termux → Battery)
+- **Enable Termux:Boot** app and run it at least once
+- **Keep phone plugged in** for reliable operation
+
 ## Running the Server
 
 ### Start Command
@@ -133,155 +163,48 @@ llama-server \
 |------|-------|---------|
 | `-ngl` | 0 | CPU-only (GPU is slower for small models) |
 | `-t` | 8 | CPU threads |
-| `-c` | 40960 | Context window (model's training context). Do NOT set higher — llama.cpp caps to GGUF metadata. Set `context_length: 65536` in Hermes config.yaml to satisfy the 64K minimum. |
+| `-c` | 40960 | Context window (capped by model training context) |
 | `--host` | 0.0.0.0 | Allow SSH tunnel connections |
 | `--port` | 8081 | Server port |
 
 ### SSH Tunnel (VPS side)
 
 ```bash
-ssh -L 18081:127.0.0.1:8081 user@phone-ip -p 8022 -N -f
+ssh -L 18081:127.0.0.1:8081 -p 8022 -N -f 100.96.22.12
 ```
 
-## Resilience: Keepalive Watchdog
-
-```bash
-#!/bin/bash
-# keepalive.sh — place on phone
-
-MODEL=/path/to/model.gguf
-BINARY=llama.cpp/build_cpu/bin/llama-server
-
-while true; do
-  if ! pgrep -f llama-server > /dev/null; then
-    # NOTE: -c 40960 is the model's training context. Hermes 64K minimum
-    # is satisfied via context_length: 65536 in config.yaml, not here.
-    $BINARY -m $MODEL -ngl 0 -t 8 -c 40960 \
-      --host 0.0.0.0 --port 8081 > llama.log 2>&1 &
-    sleep 5
-  fi
-  sleep 60
-done
-```
-
-Check every 60 seconds. If server is dead, restart it.
-
-## Resilience: Boot Auto-Start
-
-```bash
-#!/data/data/com.termux/files/usr/bin/bash
-# ~/.termux/boot/start-llama.sh
-
-sleep 10  # Wait for system
-
-llama-server -m /path/to/model.gguf -ngl 0 -t 8 -c 40960 \
-  --host 0.0.0.0 --port 8081 > llama.log 2>&1 &
-
-sleep 5
-# Start watchdog
-bash /sdcard/keepalive.sh &
-```
-
-Requires Termux:Boot app to be installed and run at least once.
-
-## Resilience: Wake Lock
-
-```bash
-termux-wake-lock
-```
-
-Prevents Android from killing Termux during sleep/screen-off.
-
-## Background Process Trick
-
-SSH on Android kills child processes when the session ends. To run long operations:
-
-```bash
-# WRONG — dies when SSH disconnects
-nohup long_command &
-
-# RIGHT — subshell detaches from SSH session
-(long_command &)
-```
-
-The subshell pattern survives SSH disconnects because the parent exits immediately.
+For production, use the `vps-tunnel-keepalive.sh` cron job instead of a manual tunnel.
 
 ## Hermes Provider Configuration
 
 ```yaml
 # ~/.hermes/config.yaml
-
-# TOP-LEVEL model section — context_length here is what Hermes reads
-# for its 64K minimum check (agent_init.py line 1281)
 model:
-  provider: phone
+  context_length: 65536
   model: Qwen3-4B-Q4_K_M.gguf
-  context_length: 65536    # ← Hermes reads THIS, not providers.phone.context_length
+  provider: phone
 
-# Provider section — base_url and api_key for the phone tunnel
 providers:
   phone:
-    base_url: http://127.0.0.1:18081/v1
-    model: Qwen3-4B-Q4_K_M.gguf
     api_key: phone-local
+    base_url: http://127.0.0.1:18081/v1
+    context_length: 65536
+    model: Qwen3-4B-Q4_K_M.gguf
 ```
 
-**Important**: The `context_length: 65536` must be in the top-level `model:` section, NOT in `providers.phone`. Hermes reads `model.context_length` at init time to check the 64K minimum. The `providers.phone.context_length` is a different field that is NOT checked by the minimum context enforcement.
-
-Model options:
-- **Qwen3-4B-Q4_K_M**: Fast, non-reasoning, best for agent tasks
-- Other non-reasoning models in the 4B-8B range work well too
-
-**Avoid thinking/reasoning models** — see warning above. They are 2-5x slower and unstable on mobile.
-
-### Other Harnesses
-
-The phone's `llama-server` exposes a standard OpenAI-compatible API. Any harness that supports custom OpenAI endpoints can use it — just point `base_url` at the SSH tunnel (e.g., `http://127.0.0.1:18081/v1`). The 64K context override described below is Hermes-specific; other harnesses may have different minimums or none at all.
-
-### ⚠️ Hermes 64K Context Minimum (Hermes-Specific Requirement)
-
-**This section only applies if you're using Hermes Agent as your harness.** Other harnesses (OpenClaw, etc.) have their own context requirements or none at all — check their docs.
-
-Hermes Agent hardcodes a **minimum 64,000 token context window** (`MINIMUM_CONTEXT_LENGTH = 64_000` in `agent/model_metadata.py:133`). At startup, Hermes checks the model's context length and **refuses to load** anything below 64K:
-
-```
-ValueError: Model ... has a context window of 40,960 tokens, which is below
-the minimum 64,000 required by Hermes Agent.
-```
-
-Qwen3-4B's GGUF reports `n_ctx_train: 40960` — below Hermes' floor. This is a **Hermes limitation**, not a llama.cpp or model limitation. The model can actually handle longer contexts via RoPE scaling, but Hermes doesn't care — it checks the GGUF metadata value at init and bails.
-
-**The fix** is a config-level override in the **top-level `model:` section** of `~/.hermes/config.yaml`:
-
-```yaml
-model:
-  provider: phone
-  model: Qwen3-4B-Q4_K_M.gguf
-  context_length: 65536   # ← Hermes reads THIS (agent_init.py line 1281)
-```
-
-**NOT** `providers.phone.context_length` — that is a different field that Hermes does NOT check for the 64K minimum enforcement.
-
-Hermes' context resolution order at init is:
-1. **Top-level `model.context_length`** ← this is what we set
-2. `custom_providers` per-model context_length
-3. Persistent cache (`~/.hermes/context_length_cache.yaml`)
-4. Model metadata from `/v1/models` or `/props` (llama.cpp reports `n_ctx_train: 40960`)
-5. Hardcoded defaults (256K)
-
-By setting `context_length: 65536` in the top-level `model:` section, Hermes accepts the model at step 1 and never falls through to the GGUF's `n_ctx_train: 40960`. The actual llama.cpp server still allocates a 40960-token KV cache — that's fine for a mobile failover node doing lightweight tasks.
-
-**Do NOT set `-c` above 40960 in llama.cpp** — the GGUF metadata caps it and llama.cpp will ignore the override. The config override is purely to satisfy Hermes' init check.
+**Note on context_length:** The model's actual training context is 40960. Hermes requires `context_length >= 65536` to pass its minimum check. Set `context_length: 65536` in the top-level `model:` section and in `providers.phone:`, and set `enforce_min_context: false` in the `agent:` section. The actual llama.cpp server will handle up to 40960.
 
 ## Troubleshooting
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| SSH dies during heavy operations | Android sshd crashes under sustained load | Use keepalive watchdog, access via screen if needed |
-| Model fails to load | Wrong path or corrupted file | Verify `.gguf` file integrity |
-| Server not responding | Phone sleeping | `termux-wake-lock` + keepalive |
+| SSH dies during heavy operations | Android sshd crashes under sustained load | Use `screen` to access phone directly, check watchdog logs |
+| Model fails to load | Wrong path or corrupted file | Verify `.gguf` file integrity, check `watchdog.log` |
+| Server not responding | Phone sleeping | `termux-wake-lock` + disable battery optimization |
 | Slow generation | Too few CPU threads | Use `-t 8` for 8-core phones |
 | Context errors | Context exceeds model training limit | Cap at model's training context (40960 for Qwen3-4B) |
+| Tunnel drops | Phone went to sleep / network change | VPS cron reconnects within 5 min; check `phone-tunnel.log` |
+| "context not big enough" | Hermes enforce_min_context check | Set `enforce_min_context: false` in config, use `context_length: 65536` |
 
 ## Benchmarks (Snapdragon 8 Elite, 22GB RAM)
 
@@ -306,3 +229,13 @@ model: qwen3-4b-q4_k_m
 # Keep prompts tight and set word limits to avoid timeouts.
 # The phone model is a fallback — primary inference should use local PC.
 ```
+
+## File Reference
+
+| File | Location | Purpose |
+|------|----------|---------|
+| `start-llama.sh` | Phone: `~/.termux/boot/` | Boot auto-start (wake lock + screen + keepalive) |
+| `keepalive.sh` | Phone: `~/` | 60s health check loop |
+| `watchdog.sh` | Phone: `~/` | Restart llama-server if dead/unresponsive |
+| `vps-tunnel-keepalive.sh` | VPS: `~/scripts/` | Reconnect SSH tunnel if dropped |
+| `build.sh` | Phone: `llama.cpp/` | Build llama.cpp from source |

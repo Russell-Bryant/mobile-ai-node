@@ -1,18 +1,20 @@
 #!/bin/bash
-# keepalive.sh — place on phone at /sdcard/keepalive.sh
-# Watches llama-server and restarts if it dies
+# keepalive.sh — Place on phone at ~/keepalive.sh
+# Watches llama-server and restarts if it dies or stops responding
+# Called from start-llama.sh after boot
 
-MODEL=/data/data/com.termux/files/home/storage/shared/AI_Models/Qwen3-4B-Q4_K_M.gguf
-BINARY=/data/data/com.termux/files/home/llama.cpp/build_cpu/bin/llama-server
-LOG=/data/data/com.termux/files/home/llama.log
+INTERVAL=60
+echo "$(date): keepalive started" >> /data/data/com.termux/files/home/watchdog.log
 
 while true; do
-  if ! pgrep -f llama-server > /dev/null 2>&1; then
-    echo "$(date): Server dead, restarting..." >> /data/data/com.termux/files/home/keepalive.log
-    cd /data/data/com.termux/files/home
-    $BINARY -m $MODEL -ngl 0 -t 8 -c 40960 \
-      --host 0.0.0.0 --port 8081 > $LOG 2>&1 &
-    sleep 5
-  fi
-  sleep 60
+    if ! pgrep -f "llama-server" > /dev/null 2>&1; then
+        # llama-server not running at all
+        echo "$(date): llama-server not running, restarting" >> /data/data/com.termux/files/home/watchdog.log
+        bash /data/data/com.termux/files/home/watchdog.sh
+    elif ! curl -s --connect-timeout 3 http://127.0.0.1:8081/health > /dev/null 2>&1; then
+        # Process might be stuck
+        echo "$(date): llama-server not responding, restarting" >> /data/data/com.termux/files/home/watchdog.log
+        bash /data/data/com.termux/files/home/watchdog.sh
+    fi
+    sleep $INTERVAL
 done

@@ -1,19 +1,31 @@
 #!/bin/bash
 # ~/.termux/boot/start-llama.sh
 # Auto-starts llama-server on phone boot via Termux:Boot
+# Uses screen so it survives Termux background kills
 
-sleep 10  # Wait for system
+export LD_LIBRARY_PATH=/data/data/com.termux/files/usr/lib
 
-MODEL=/data/data/com.termux/files/home/storage/shared/AI_Models/Qwen3-4B-Q4_K_M.gguf
-BINARY=/data/data/com.termux/files/home/llama.cpp/build_cpu/bin/llama-server
-LOG=/data/data/com.termux/files/home/llama.log
+# Prevent Android from killing Termux
+termux-wake-lock
 
-# NOTE: -c 40960 is the model's training context (n_ctx_train). Do NOT set
-# higher — llama.cpp caps to GGUF metadata. Hermes requires 64K minimum;
-# set context_length: 65536 in ~/.hermes/config.yaml to satisfy that check.
-$BINARY -m $MODEL -ngl 0 -t 8 -c 40960 \
-  --host 0.0.0.0 --port 8081 > $LOG 2>&1 &
+# Wait for system to settle
+sleep 15
 
+MODEL=/data/data/com.termux/files/home/models/qwen3-4b/Qwen3-4B-Q4_K_M.gguf
+
+# Kill any existing instances
+pkill -9 -f llama-server 2>/dev/null
+pkill -f keepalive.sh 2>/dev/null
+screen -S llama -X quit 2>/dev/null
+sleep 2
+
+# Start llama-server in screen session
+screen -dmS llama bash -c "export LD_LIBRARY_PATH=/data/data/com.termux/files/usr/lib:\$LD_LIBRARY_PATH; /data/data/com.termux/files/usr/bin/llama-server --model $MODEL --port 8081 --threads 8 --ctx-size 40960 --host 0.0.0.0 --chat-template chatml --metrics --log-disable; exec bash"
+
+echo "$(date): llama-server started" >> /data/data/com.termux/files/home/boot.log
+
+# Start keepalive watchdog in background
 sleep 5
-# Start watchdog
-bash /sdcard/keepalive.sh &
+nohup bash /data/data/com.termux/files/home/keepalive.sh >> /data/data/com.termux/files/home/watchdog.log 2>&1 &
+
+echo "$(date): keepalive started" >> /data/data/com.termux/files/home/boot.log
