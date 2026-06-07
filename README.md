@@ -210,12 +210,23 @@ The subshell pattern survives SSH disconnects because the parent exits immediate
 
 ```yaml
 # ~/.hermes/config.yaml
+
+# TOP-LEVEL model section — context_length here is what Hermes reads
+# for its 64K minimum check (agent_init.py line 1281)
+model:
+  provider: phone
+  model: Qwen3-4B-Q4_K_M.gguf
+  context_length: 65536    # ← Hermes reads THIS, not providers.phone.context_length
+
+# Provider section — base_url and api_key for the phone tunnel
 providers:
   phone:
     base_url: http://127.0.0.1:18081/v1
     model: Qwen3-4B-Q4_K_M.gguf
-    context_length: 65536
+    api_key: phone-local
 ```
+
+**Important**: The `context_length: 65536` must be in the top-level `model:` section, NOT in `providers.phone`. Hermes reads `model.context_length` at init time to check the 64K minimum. The `providers.phone.context_length` is a different field that is NOT checked by the minimum context enforcement.
 
 Model options:
 - **Qwen3-4B-Q4_K_M**: Fast, non-reasoning, best for agent tasks
@@ -240,21 +251,25 @@ the minimum 64,000 required by Hermes Agent.
 
 Qwen3-4B's GGUF reports `n_ctx_train: 40960` — below Hermes' floor. This is a **Hermes limitation**, not a llama.cpp or model limitation. The model can actually handle longer contexts via RoPE scaling, but Hermes doesn't care — it checks the GGUF metadata value at init and bails.
 
-**The fix** is a config-level override in `~/.hermes/config.yaml`:
+**The fix** is a config-level override in the **top-level `model:` section** of `~/.hermes/config.yaml`:
 
 ```yaml
-providers:
-  phone:
-    context_length: 65536   # ← Hermes reads this FIRST, before querying the model
+model:
+  provider: phone
+  model: Qwen3-4B-Q4_K_M.gguf
+  context_length: 65536   # ← Hermes reads THIS (agent_init.py line 1281)
 ```
 
-Hermes' context resolution order is:
-1. **Config override** (`providers.phone.context_length`) ← this is what we set
-2. Persistent cache
-3. Model metadata from `/v1/models` or `/props`
-4. Hardcoded defaults
+**NOT** `providers.phone.context_length` — that is a different field that Hermes does NOT check for the 64K minimum enforcement.
 
-By setting `context_length: 65536` in config, Hermes accepts the model at step 1 and never checks the GGUF's `n_ctx_train`. The actual llama.cpp server still allocates a 40960-token KV cache — that's fine for a mobile failover node doing lightweight tasks.
+Hermes' context resolution order at init is:
+1. **Top-level `model.context_length`** ← this is what we set
+2. `custom_providers` per-model context_length
+3. Persistent cache (`~/.hermes/context_length_cache.yaml`)
+4. Model metadata from `/v1/models` or `/props` (llama.cpp reports `n_ctx_train: 40960`)
+5. Hardcoded defaults (256K)
+
+By setting `context_length: 65536` in the top-level `model:` section, Hermes accepts the model at step 1 and never falls through to the GGUF's `n_ctx_train: 40960`. The actual llama.cpp server still allocates a 40960-token KV cache — that's fine for a mobile failover node doing lightweight tasks.
 
 **Do NOT set `-c` above 40960 in llama.cpp** — the GGUF metadata caps it and llama.cpp will ignore the override. The config override is purely to satisfy Hermes' init check.
 
