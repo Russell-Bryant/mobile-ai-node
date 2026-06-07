@@ -85,7 +85,7 @@ llama-server \
 |------|-------|---------|
 | `-ngl` | 0 | CPU-only (GPU is slower for small models) |
 | `-t` | 8 | CPU threads |
-| `-c` | 40960 | Context window (capped by model training context) |
+| `-c` | 40960 | Context window (model's training context). Do NOT set higher — llama.cpp caps to GGUF metadata. Set `context_length: 65536` in Hermes config.yaml to satisfy the 64K minimum. |
 | `--host` | 0.0.0.0 | Allow SSH tunnel connections |
 | `--port` | 8081 | Server port |
 
@@ -106,6 +106,8 @@ BINARY=llama.cpp/build_cpu/bin/llama-server
 
 while true; do
   if ! pgrep -f llama-server > /dev/null; then
+    # NOTE: -c 40960 is the model's training context. Hermes 64K minimum
+    # is satisfied via context_length: 65536 in config.yaml, not here.
     $BINARY -m $MODEL -ngl 0 -t 8 -c 40960 \
       --host 0.0.0.0 --port 8081 > llama.log 2>&1 &
     sleep 5
@@ -164,7 +166,7 @@ providers:
   phone:
     base_url: http://127.0.0.1:18081/v1
     model: Qwen3-4B-Q4_K_M.gguf
-    context_length: 40960
+    context_length: 65536
 ```
 
 Model options:
@@ -172,6 +174,20 @@ Model options:
 - Other non-reasoning models in the 4B-8B range work well too
 
 **Avoid thinking/reasoning models** — see warning above. They are 2-5x slower and unstable on mobile.
+
+### ⚠️ Hermes 64K Context Minimum (Required)
+
+Hermes Agent enforces a **minimum 64,000 token context window** (`MINIMUM_CONTEXT_LENGTH` in `agent/model_metadata.py`). Qwen3-4B's GGUF reports `n_ctx_train: 40960`, which is below this floor.
+
+**Do NOT set `-c` above 40960 in llama.cpp** — the GGUF metadata caps it and llama.cpp will ignore the override.
+
+**Instead, set `context_length: 65536` in `config.yaml`** (as shown above). Hermes checks the provider config *before* querying the model, so this satisfies the 64K check. The phone's llama.cpp still allocates a 40960-token KV cache — that's fine for a mobile failover node.
+
+Without this override, Hermes refuses to load the model with:
+```
+ValueError: Model ... has a context window of 40,960 tokens, which is below
+the minimum 64,000 required by Hermes Agent.
+```
 
 ## Troubleshooting
 
