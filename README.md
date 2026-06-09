@@ -97,6 +97,43 @@ Thinking models (e.g. Nemotron, DeepSeek-R1, QwQ) generate internal reasoning to
 
 **Use non-reasoning models only.** Qwen3-4B is the recommended choice — fast, capable, and designed for direct response generation.
 
+## ✅ Capabilities & Limitations
+
+This node uses a **4B parameter model with 40K context** on mobile hardware. That defines hard boundaries on what it can and cannot do. Don't fight them.
+
+### What It Does Well
+
+- **Short, focused Q&A** — factual lookups, definitions, quick explanations
+- **Simple text transformations** — formatting, templating, light editing
+- **Structured data tasks** — JSON parsing, extracting fields, simple filtering
+- **Smart home control** — intent parsing for Home Assistant commands
+- **Short summaries** — condensing a single document or thread
+- **Bounded cron jobs** — health checks, file watchers, greeting messages
+- **Script-only (`no_agent`) cron jobs** — the ideal use case; the node runs a script and delivers output
+
+### What It Cannot Do
+
+- **Multi-session analysis** — session_search + read + synthesize across multiple sessions (context fills fast; 93-minute truncation failure, June 2026)
+- **Complex multi-tool workflows** — long chains of tool calls that accumulate context
+- **Large document processing** — reviewing 100+ page decks or extracting from large codebases
+- **Deep reasoning tasks** — architectural analysis, strategic planning, nuanced debugging
+- **Code generation at scale** — small functions yes, full refactors no
+- **Tasks triggering context compaction** — when Hermes compacts context mid-task on this node, quality drops sharply and outputs truncate
+
+### Golden Rules
+
+1. **Single task per request.** Don't ask it to research, analyze, and write in one go.
+2. **Under 200 words output** for reliable completion. Long outputs = truncation risk.
+3. **No recursive self-reference.** The node cannot analyze its own past sessions meaningfully.
+4. **Not a primary device.** This is a fallback/edge node. Primary inference = LM Studio (RTX 3090, 27B+ models) or OpenRouter.
+5. **`no_agent=True` cron jobs are the sweet spot.** Script delivers output directly — no LLM context needed.
+
+### Verdict
+
+**Good for:** always-on lightweight inference, emergency fallback when PC + cloud are down, `no_agent` script runners.
+
+**Not a replacement for:** desktop GPUs, cloud models, or any task requiring deep reasoning over large context. Attempting this will waste time (see: 93-minute truncation failure).
+
 ## Why This Commit
 
 Later commits (`b36eefc1b+`) break Android Vulkan with segfaults during shader compilation. Commit `c20c44514` (May 2026) is the last known stable version for Adreno GPUs.
@@ -219,16 +256,28 @@ providers:
 
 ## Cron Job Configuration
 
-When using the phone as a Hermes inference backend for cron jobs:
+**Ideal use case: `no_agent=True` script-only jobs.** The node runs a script and delivers stdout — no LLM context consumed, no truncation risk.
 
 ```yaml
-# Cron jobs targeting the phone should use:
-provider: phone
-model: qwen3-4b-q4_k_m
-
-# Keep prompts tight and set word limits to avoid timeouts.
-# The phone model is a fallback — primary inference should use local PC.
+# Good — script-only, no LLM
+no_agent: true
+script: ~/.hermes/scripts/health-check.py
 ```
+
+For LLM-driven cron jobs, keep them **small and bounded**:
+
+```yaml
+# OK — short prompt, small output
+enabled_toolsets: ["terminal", "file"]
+prompt: "Check disk usage. Report in under 100 words."
+model:
+  model: qwen3-4b-q4_k_m
+
+# BAD — will likely truncate, 40K context not enough
+prompt: "Search all recent sessions, read each one, synthesize a comprehensive status report, write to Obsidian, and sync"
+```
+
+**Rule of thumb:** if the job needs more than 2-3 tool calls or more than ~200 words of output, run it on LM Studio (27B) or OpenRouter instead.
 
 ## File Reference
 
